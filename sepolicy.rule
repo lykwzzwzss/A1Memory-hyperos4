@@ -1,0 +1,5 @@
+# A1-内存管理 [HyperOS4]
+# su 域进程管理规则, 由 Magisk / KernelSU / APatch 在启动时加载
+allow su proc_attr:file { read write open getattr };
+allow su appdomain:process signal;
+allow su su:process signal;
