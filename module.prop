@@ -2,5 +2,6 @@ id=a1memory_hyperos4
 name=A1-内存管理 [HyperOS4]
 version=v1.0.0 (2026.08.16)
 versionCode=100
-author=A1 Community
+author=lykwzzwzss
 description=游戏保活:游戏切到后台时锁定其内存优先级并做压力感知清理,防止被系统杀掉。仅 arm64,适配 Android 15/16/17 (16KB 页) 与 HyperOS 4,日常零干预。
+updateJson=https://raw.githubusercontent.com/lykwzzwzss/A1Memory-hyperos4/main/update.json
