@@ -32,7 +32,7 @@
 
 ## 安装
 
-1. 下载 [`A1Memory-hyperos4-1.1.0.zip`](./A1Memory-hyperos4-1.1.0.zip)；
+1. 从 [Releases](https://github.com/lykwzzwzss/A1Memory-hyperos4/releases/latest) 下载 `A1Memory-hyperos4-1.1.0.zip`；
 2. 在 KernelSU、Magisk 或 APatch 中刷入；
 3. 重启设备；
 4. 修改 `config/game.conf` 后无需重新编译，守护进程会自动热加载。
