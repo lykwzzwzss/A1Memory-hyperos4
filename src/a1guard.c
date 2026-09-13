@@ -66,7 +66,7 @@ static struct config cfg = {
     .protect_minutes = 30,
     .pin_adj_main = 0,
     .pin_adj_child = 200,
-    .cleanup = 1,
+    .cleanup = 0,
     .psi_threshold = 40.0,
     .cleanup_interval_ms = 15000,
     .cleanup_cooldown_ms = 60000,
@@ -155,7 +155,7 @@ static void parse_guard_conf(void)
     cfg = (struct config){
         .enable = 1, .poll_ms = 2000, .idle_poll_ms = 5000,
         .protect_minutes = 30, .pin_adj_main = 0, .pin_adj_child = 200,
-        .cleanup = 1, .psi_threshold = 40.0,
+        .cleanup = 0, .psi_threshold = 40.0,
         .cleanup_interval_ms = 15000, .cleanup_cooldown_ms = 60000,
         .cleanup_max_kill = 8, .log_enable = 1,
         .log_path = "/data/local/tmp/a1guard.log",
@@ -284,18 +284,28 @@ static int read_adj(int pid)
     return atoi(buf);
 }
 
-static void write_adj(int pid, int adj)
+static bool write_adj(int pid, int adj)
 {
     char path[64], buf[16];
     int fd, len;
     snprintf(path, sizeof path, "/proc/%d/oom_score_adj", pid);
     fd = open(path, O_WRONLY | O_CLOEXEC);
-    if (fd < 0)
-        return;
+    if (fd < 0) {
+        log_msg("oom_score_adj open failed pid=%d adj=%d errno=%d (%s)",
+                pid, adj, errno, strerror(errno));
+        return false;
+    }
     len = snprintf(buf, sizeof buf, "%d", adj);
     ssize_t w = write(fd, buf, (size_t)len);
-    (void)w;
+    if (w != len) {
+        int saved_errno = errno;
+        close(fd);
+        log_msg("oom_score_adj write failed pid=%d adj=%d wrote=%zd/%d errno=%d (%s)",
+                pid, adj, w, len, saved_errno, strerror(saved_errno));
+        return false;
+    }
     close(fd);
+    return true;
 }
 
 static int scan_procs(struct proc *out, int max)
@@ -354,6 +364,45 @@ static void apply_exemptions(int pkg_idx)
     log_msg("exemptions applied: %s", pkg);
 }
 
+struct pin_record {
+    int pid;
+    int pkg_idx;
+    int original_adj;
+    int target_adj;
+};
+
+#define MAX_PINNED 512
+static struct pin_record pinned[MAX_PINNED];
+static int pinned_n;
+
+static int find_pinned(int pid, int pkg_idx)
+{
+    for (int i = 0; i < pinned_n; i++)
+        if (pinned[i].pid == pid && pinned[i].pkg_idx == pkg_idx)
+            return i;
+    return -1;
+}
+
+static void restore_pins(int pkg_idx)
+{
+    for (int i = pinned_n - 1; i >= 0; i--) {
+        struct pin_record *p = &pinned[i];
+        if (pkg_idx >= 0 && p->pkg_idx != pkg_idx)
+            continue;
+
+        int cur = read_adj(p->pid);
+        if (cur < 0 || cur != p->target_adj) {
+            if (cur >= 0)
+                log_msg("skip restore pid=%d: current adj=%d, expected pinned=%d",
+                        p->pid, cur, p->target_adj);
+        } else {
+            write_adj(p->pid, p->original_adj);
+        }
+
+        pinned[i] = pinned[--pinned_n];
+    }
+}
+
 static void pin_processes(struct proc *procs, int n, int pkg_idx)
 {
     const char *pkg = games[pkg_idx];
@@ -365,10 +414,20 @@ static void pin_processes(struct proc *procs, int n, int pkg_idx)
             continue;
         if (name[main_len] != 0 && name[main_len] != ':')
             continue;
+
         int target = name[main_len] == ':' ? cfg.pin_adj_child : cfg.pin_adj_main;
         int cur = read_adj(procs[i].pid);
-        if (cur >= 0 && cur != target)
-            write_adj(procs[i].pid, target);
+        if (cur < 0 || cur == target || find_pinned(procs[i].pid, pkg_idx) >= 0)
+            continue;
+
+        if (write_adj(procs[i].pid, target) && pinned_n < MAX_PINNED) {
+            pinned[pinned_n++] = (struct pin_record){
+                .pid = procs[i].pid,
+                .pkg_idx = pkg_idx,
+                .original_adj = cur,
+                .target_adj = target,
+            };
+        }
     }
 }
 
@@ -393,6 +452,44 @@ static double read_psi_avg60(void)
     }
     fclose(f);
     return avg60;
+}
+
+static bool read_top_package(char *out, size_t out_sz)
+{
+    const char *top_file = "/data/local/tmp/a1guard.top";
+    FILE *f;
+    char line[LINE_SZ];
+    bool found = false;
+
+    if (system("dumpsys activity activities > /data/local/tmp/a1guard.top 2>/dev/null") != 0)
+        return false;
+    f = fopen(top_file, "r");
+    if (!f)
+        return false;
+
+    while (fgets(line, sizeof line, f)) {
+        char *p = strstr(line, "topResumedActivity=");
+        if (!p)
+            continue;
+        p = strstr(p, " u0 ");
+        if (!p)
+            continue;
+        p += 4;
+        char *slash = strchr(p, '/');
+        if (!slash)
+            continue;
+        size_t len = (size_t)(slash - p);
+        if (len == 0 || len >= out_sz)
+            continue;
+        memcpy(out, p, len);
+        out[len] = 0;
+        found = true;
+        break;
+    }
+
+    fclose(f);
+    unlink(top_file);
+    return found;
 }
 
 static void run_cleanup(void)
@@ -519,9 +616,11 @@ int main(void)
 
         bool any_bg = false;
         if (cfg.enable && games_n > 0) {
+            char top_pkg[128] = {0};
+            bool top_known = read_top_package(top_pkg, sizeof top_pkg);
             int n = scan_procs(procs, MAX_PROCS);
             for (int gi = 0; gi < games_n; gi++) {
-                bool running = false, fg = false;
+                bool running = false;
                 int main_len = (int)strlen(games[gi]);
                 for (int i = 0; i < n; i++) {
                     const char *name = procs[i].name;
@@ -530,19 +629,23 @@ int main(void)
                     if (name[main_len] != 0 && name[main_len] != ':')
                         continue;
                     running = true;
-                    int adj = read_adj(procs[i].pid);
-                    if (adj >= 0 && adj <= FG_ADJ_MAX)
-                        fg = true;
+                    break;
                 }
-                if (!running)
+                if (!running || !top_known)
                     continue;
-                if (fg) {
+
+                if (!strcmp(top_pkg, games[gi])) {
                     last_fg[gi] = now_ms();
+                    restore_pins(gi);
                     continue;
                 }
+
                 long long win = (long long)cfg.protect_minutes * 60 * 1000;
-                if (now_ms() - last_fg[gi] > win)
+                if (last_fg[gi] == 0 || now_ms() - last_fg[gi] > win) {
+                    restore_pins(gi);
                     continue;
+                }
+
                 any_bg = true;
                 if (!exempted[gi])
                     apply_exemptions(gi);
@@ -556,3 +659,4 @@ int main(void)
         usleep((useconds_t)(cfg.enable ? cfg.poll_ms : cfg.idle_poll_ms) * 1000);
     }
 }
+

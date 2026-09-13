@@ -1,12 +1,5 @@
 #!/system/bin/sh
-#
 # A1-内存管理 [HyperOS4] service
-# Copyright (C) 2026 A1 Community
-#
-# This program is free module: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
 
 MODDIR=${0%/*}
 PIDFILE=/data/local/tmp/a1guard.pid

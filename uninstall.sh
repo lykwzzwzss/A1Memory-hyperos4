@@ -1,12 +1,5 @@
 #!/system/bin/sh
-#
 # A1-内存管理 [HyperOS4] uninstaller
-# Copyright (C) 2026 A1 Community
-#
-# This program is free module: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
 
 PIDFILE=/data/local/tmp/a1guard.pid
 MODDIR=/data/adb/modules/a1memory_hyperos4
@@ -27,4 +20,4 @@ if [ -f "$MODDIR/config/game.conf" ]; then
   done < "$MODDIR/config/game.conf"
 fi
 
-echo "- A1-内存管理 [HyperOS4] 已卸载"
+echo "- A1-内存管理 [HyperOS4] 测试版已卸载"
